@@ -1,9 +1,9 @@
 FROM quay.io/ascend/cann:8.5.0-910b-ubuntu22.04-py3.11
 
-# On 2026/01/31
-# https://github.com/tile-ai/tilelang-ascend/commit/d2405b5975edaa36166b702d2ef8c1952b7b7337
+# On 2026/02/14
+# https://github.com/tile-ai/tilelang-ascend/commit/96c01413021dedc7b3a6648a4efba9dc365bcca1
 # include the new PTO backend example: https://github.com/tile-ai/tilelang-ascend/pull/367
-ARG COMMIT=d2405b5975edaa36166b702d2ef8c1952b7b7337
+ARG COMMIT=96c01413021dedc7b3a6648a4efba9dc365bcca1
 
 WORKDIR /sources/
 RUN git clone --recursive https://github.com/tile-ai/tilelang-ascend.git
