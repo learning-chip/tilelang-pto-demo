@@ -15,8 +15,7 @@ pass_configs = {
 	tilelang.PassConfigKey.TL_ASCEND_AUTO_SYNC: True
 }
 
-@tilelang.jit(out_idx=[-1], target="pto", pass_configs=pass_configs)
-def linear_attention_ker(B, H, L, D, C, dtype="float16", accum_dtype="float"):
+def linear_attention_func(B, H, L, D, C, dtype="float16", accum_dtype="float"):
 	shape = [B, H, L, D]
 	chunk_num = T.ceildiv(L, C)
 	VEC_NUM = 2
@@ -65,7 +64,7 @@ def linear_attention_ker(B, H, L, D, C, dtype="float16", accum_dtype="float"):
 					T.gemm_v0(acc_l1, v_l1, o_l0, init = True)
 					T.gemm_v0(q_l1, h_l1, o_l0, init = False)
 					T.copy(o_l0, O[bz, by, i * C, 0])
-			
+
 			with T.Scope("V"):
 				T.tile.fill(hsum_ub, 0.0)
 				T.tile.fill(zero_ub, 0.0)
@@ -81,16 +80,22 @@ def linear_attention_ker(B, H, L, D, C, dtype="float16", accum_dtype="float"):
 					T.copy(acc_ub, workspace_1[bz, by, vid * C // VEC_NUM, 0])
 					T.copy(hsum_ub, workspace_2[bz, by, vid * D // VEC_NUM, 0])
 					T.set_cross_flag("MTE3", 1)
-	
+
 	return main
 
+
+linear_attention_ker = tilelang.jit(
+    out_idx=[-1], target="pto", pass_configs=pass_configs)(linear_attention_func)
+
+
 def linear_attention(q, k, v, C):
-	B, H, L, D = q.shape
-	ker = linear_attention_ker(B, H, L, D, C)
-	workspace_1 = torch.zeros([B, H, C, C]).npu().to(torch.float16)
-	workspace_2 = torch.zeros([B, H, D, D]).npu().to(torch.float16)
-	o = ker(q, k, v, workspace_1, workspace_2)
-	return o
+    B, H, L, D = q.shape
+    print("B, H, L, D, C in jit", B, H, L, D, C)
+    ker = linear_attention_ker(B, H, L, D, C)
+    workspace_1 = torch.zeros([B, H, C, C]).npu().to(torch.float16)
+    workspace_2 = torch.zeros([B, H, D, D]).npu().to(torch.float16)
+    o = ker(q, k, v, workspace_1, workspace_2)
+    return o
 
 def ref_linear_attention(q, k, v):
 	B, H, L, D = q.shape
@@ -109,14 +114,28 @@ def ref_linear_attention(q, k, v):
 		o[:, :, i, :] = o_i
 	return o.to(torch.float16)
 
+
+def get_cpp_source(original_func, shape):
+    # https://github.com/tile-ai/tilelang-ascend/issues/337#issuecomment-3784840730
+    B, H, L, D, C = shape
+    print("B, H, L, D, C in aot", B, H, L, D, C)
+    with tilelang.transform.PassContext(
+        opt_level=3,
+        config=pass_configs
+    ):
+        kernel = original_func(B, H, L, D, C)
+        kernel_lower = tilelang.engine.lower(kernel, target="pto")
+        cpp_source = kernel_lower.kernel_source
+    return cpp_source
+
+
 if __name__ == "__main__":
-
-    torch.manual_seed(0)
-    torch.set_printoptions(threshold = float('inf'), sci_mode = False)
-
     test_configs = [
         (2, 2, 512, 128, 64),
     ]
+
+    torch.manual_seed(0)
+    torch.set_printoptions(threshold = float('inf'), sci_mode = False)
 
     for B, H, L, D, C in test_configs:
         print(f"Testing linear attention with B={B}, H={H}, L={L}, D={D}, C={C}")
@@ -132,3 +151,9 @@ if __name__ == "__main__":
 
     print("Kernel Output Match!")
 
+    shape = test_configs[0]
+    cpp_source = get_cpp_source(linear_attention_func, shape)
+    src_dump_path = "./linear_attention.cpp"
+    print("dump source code to: ", src_dump_path)
+    with open(src_dump_path, "w") as f:
+        f.write(cpp_source)
